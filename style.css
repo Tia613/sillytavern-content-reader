@@ -1,0 +1,6 @@
+#content-reader-settings label { display: block; margin: 10px 0; }
+#content-reader-settings select, #content-reader-settings input[type="range"] { width: 100%; }
+#content-reader-settings .cr-controls { display: flex; flex-wrap: wrap; gap: 6px; }
+#content-reader-settings button { min-height: 42px; margin: 0; }
+#content-reader-settings [data-cr="status"] { overflow-wrap: anywhere; }
+.mes_buttons .cr-read { font-size: 12px; padding: 4px 8px; min-height: 32px; width: auto; }
