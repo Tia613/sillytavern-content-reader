@@ -1,9 +1,10 @@
-import { extractContent, splitText } from './text.mjs';
+import { extractContent, splitText, stripLeadingStatus } from './text.mjs';
+import { ReaderPlayer } from './player.mjs';
 
 const KEY = 'content_reader_v1';
 const synth = window.speechSynthesis;
 let panel, status, voiceSelect, settings;
-let run = 0, current = null, chunks = [], position = 0, paused = false;
+let player;
 let armed = false, generating = false, pending = new Set(), spoken = new Map();
 const context = () => SillyTavern.getContext();
 const tell = text => { if (status) status.textContent = text; };
@@ -14,58 +15,42 @@ function clean(raw) {
     doc.querySelectorAll('script,style,template,iframe,svg,pre,code').forEach(el => el.remove());
     doc.querySelectorAll('br').forEach(el => el.replaceWith('\n'));
     doc.querySelectorAll('p,div,li,section,blockquote').forEach(el => el.append('\n'));
-    return (doc.body.textContent ?? '')
+    const text = (doc.body.textContent ?? '')
         .replace(/```[\s\S]*?```/g, '')
         .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
         .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
         .replace(/https?:\/\/\S+/g, '')
         .replace(/[*_`#~]/g, '').replace(/\n{3,}/g, '\n\n').trim();
+    return settings.skipStatus ? stripLeadingStatus(text) : text;
 }
 
 function stop(message = '已停止') {
-    run++;
-    current = null; chunks = []; position = 0; paused = false;
-    synth?.cancel(); tell(message);
+    player?.stop(); tell(message);
 }
 
-function next(token) {
-    if (token !== run || paused) return;
-    if (position >= chunks.length) { current = null; tell('朗读完成'); return; }
-    const utterance = new SpeechSynthesisUtterance(chunks[position]);
-    const voices = synth.getVoices();
-    const voice = voices.find(v => v.voiceURI === settings.voice)
-        ?? voices.find(v => /^zh/i.test(v.lang));
-    if (voice) utterance.voice = voice;
-    utterance.lang = voice?.lang ?? 'zh-CN';
-    utterance.rate = settings.rate;
-    current = utterance; // Retain the utterance for mobile browser implementations.
-    tell(`正在朗读 ${position + 1} / ${chunks.length}`);
-    utterance.onend = () => {
-        if (token !== run) return;
-        current = null;
-        position++; next(token);
-    };
-    utterance.onerror = event => {
-        if (token !== run) return;
-        stop(`朗读失败（${event.error}）。请点播放重试，或切换音色；检查系统中文语音包。`);
-    };
-    synth.speak(utterance);
+function syncButtons() {
+    document.querySelectorAll('#chat .mes .cr-read').forEach(button => {
+        const id = Number(button.closest('.mes').getAttribute('mesid'));
+        const active = player?.active && player.key === id;
+        const label = active ? (player.paused ? '▶ 继续' : '⏸ 暂停') : '🔊 正文';
+        if (button.textContent !== label) button.textContent = label;
+        button.setAttribute('aria-label', label);
+    });
 }
 
-function speak(text) {
+function speak(text, key = null) {
     if (!synth || !window.SpeechSynthesisUtterance) return tell('此浏览器没有提供系统朗读接口。');
-    stop();
-    if (!text) return tell('没有找到完整的 <content> 正文，已跳过。');
-    chunks = splitText(text);
-    if (!chunks.length) return tell('正文为空，已跳过。');
-    next(run);
+    if (!text) return stop('没有找到完整的 <content> 正文，或过滤后正文为空。');
+    player.play(splitText(text), key);
 }
 
 function readMessage(id) {
     const message = context().chat[Number(id)];
     if (!message || message.is_user || message.is_system) return tell('请选择角色回复。');
     armed = true;
-    speak(clean(message.mes));
+    id = Number(id);
+    if (player.active && player.key === id) player.toggle();
+    else speak(clean(message.mes), id);
 }
 
 function refreshVoices() {
@@ -93,6 +78,7 @@ function addButtons() {
         button.addEventListener('click', () => readMessage(el.getAttribute('mesid')));
         target.append(button);
     });
+    syncButtons();
 }
 
 function autoRead() {
@@ -107,7 +93,7 @@ function autoRead() {
         const text = clean(message.mes);
         if (text) { texts.push(text); spoken.set(id, message.mes); }
     }
-    if (texts.length) speak(texts.join('\n\n'));
+    if (texts.length) speak(texts.join('\n\n'), ids.length === 1 ? ids[0] : null);
 }
 
 function init() {
@@ -115,13 +101,31 @@ function init() {
     const ctx = context();
     ctx.extensionSettings[KEY] ??= { auto: false, rate: 1, voice: '' };
     settings = ctx.extensionSettings[KEY];
+    settings.skipStatus ??= true;
     settings.rate = Math.min(2, Math.max(0.5, Number(settings.rate) || 1));
+    player = new ReaderPlayer(synth, text => {
+        const utterance = new SpeechSynthesisUtterance(text);
+        const voices = synth.getVoices();
+        const voice = voices.find(v => v.voiceURI === settings.voice) ?? voices.find(v => /^zh/i.test(v.lang));
+        if (voice) utterance.voice = voice;
+        utterance.lang = voice?.lang ?? 'zh-CN'; utterance.rate = settings.rate;
+        return utterance;
+    }, {
+        fallback: /Android/i.test(navigator.userAgent),
+        changed: (state, error) => {
+            syncButtons();
+            if (error) tell(`朗读失败（${error}），请切换音色或重新播放。`);
+            else if (state.active) tell(state.paused ? '已暂停，点击同一按钮继续。' : `正在朗读 ${state.index + 1} / ${state.chunks.length}`);
+            else tell('朗读完成或已停止。');
+        },
+    });
     panel = document.createElement('div'); panel.id = 'content-reader-settings';
     panel.innerHTML = `<div class="inline-drawer">
-      <div class="inline-drawer-toggle inline-drawer-header"><b>正文听书 · 0.1.0</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div>
+      <div class="inline-drawer-toggle inline-drawer-header"><b>正文听书 · 0.2.0</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div>
       <div class="inline-drawer-content">
         <p>只读完整的 &lt;content&gt; 正文。每次刷新后，先点击「试音」或播放一次。</p>
         <label><input type="checkbox" data-cr="auto"> 回复完成后自动朗读</label>
+        <label><input type="checkbox" data-cr="skip-status"> 跳过正文开头的【状态栏】</label>
         <label>音色 <select class="text_pole" data-cr="voice"></select></label>
         <label>语速 <span data-cr="rate-label"></span><input data-cr="rate" type="range" min="0.5" max="2" step="0.1"></label>
         <div class="cr-controls"><button type="button" class="menu_button" data-cr="test">试音 / 开启朗读</button><button type="button" class="menu_button" data-cr="latest">读最新回复</button><button type="button" class="menu_button" data-cr="pause">暂停 / 继续</button><button type="button" class="menu_button" data-cr="stop">停止</button><button type="button" class="menu_button" data-cr="refresh">刷新音色</button></div>
@@ -131,6 +135,8 @@ function init() {
     (document.querySelector('#extensions_settings2') ?? document.querySelector('#extensions_settings'))?.append(panel);
     const get = name => panel.querySelector(`[data-cr="${name}"]`);
     status = get('status'); voiceSelect = get('voice');
+    get('skip-status').checked = settings.skipStatus;
+    get('skip-status').onchange = event => { settings.skipStatus = event.target.checked; save(); stop('过滤设置已保存，请重新播放。'); };
     get('auto').checked = settings.auto;
     get('auto').onchange = event => { settings.auto = event.target.checked; save(); tell('设置已保存；自动播放前请先点击试音。'); };
     get('rate').value = settings.rate; get('rate-label').textContent = `${settings.rate}×`;
@@ -145,9 +151,7 @@ function init() {
     };
     get('stop').onclick = () => { pending.clear(); stop(); };
     get('pause').onclick = () => {
-        if (!current && !paused) return tell('请先播放一条正文。');
-        if (!paused) { paused = true; synth.pause(); tell('已暂停；若手机无法继续，可重新播放。'); }
-        else { paused = false; if (current) { synth.resume(); tell(`正在朗读 ${position + 1} / ${chunks.length}`); } else next(run); }
+        if (player.active) player.toggle(); else tell('请先播放一条正文。');
     };
     refreshVoices(); synth?.addEventListener('voiceschanged', refreshVoices);
     tell(synth ? '等待播放。先点试音，确认手机有可用的中文语音。' : '此浏览器不支持系统朗读。');

@@ -17,6 +17,20 @@ export function extractContent(raw) {
     return blocks.join('\n\n');
 }
 
+export function stripLeadingStatus(text) {
+    let rest = String(text).trimStart();
+    while (rest.startsWith('【')) {
+        let depth = 0, end = -1;
+        for (let i = 0; i < rest.length; i++) {
+            if (rest[i] === '【') depth++;
+            if (rest[i] === '】' && --depth === 0) { end = i; break; }
+        }
+        if (end < 0) return rest; // Preserve text when brackets are incomplete.
+        rest = rest.slice(end + 1).trimStart();
+    }
+    return rest;
+}
+
 export function splitText(text, limit = 140) {
     const result = [];
     for (const sentence of text.match(/[^。！？!?；;\n]+[。！？!?；;\n]*|[。！？!?；;\n]+/gu) ?? []) {
