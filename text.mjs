@@ -1,20 +1,28 @@
 // Only complete, non-nested content blocks are eligible for narration.
 export function extractContent(raw) {
     const blocks = [];
-    let start = -1;
-    let nested = false;
-    let depth = 0;
-    for (const match of String(raw ?? '').matchAll(/<\s*(\/?)content\s*>/gi)) {
+    const stack = [];
+    const text = String(raw ?? '');
+    const recovered = [];
+    for (const match of text.matchAll(/<\s*(\/?)content\s*>/gi)) {
         if (!match[1]) {
-            if (depth === 0) { start = match.index + match[0].length; nested = false; }
-            else nested = true;
-            depth++;
-        } else if (depth > 0) {
-            depth--;
-            if (depth === 0 && !nested) blocks.push(String(raw).slice(start, match.index));
+            if (stack.length) stack.at(-1).nested = true;
+            const start = match.index + match[0].length;
+            const before = text.slice(text.lastIndexOf('\n', match.index - 1) + 1, match.index);
+            const standalone = !before.trim() && /^[^\S\r\n]*(?:\r?\n|$)/.test(text.slice(start));
+            stack.push({ start, standalone, nested: false });
+        } else if (stack.length) {
+            const block = stack.pop();
+            if (!block.nested) {
+                const body = text.slice(block.start, match.index);
+                if (!stack.length) blocks.push(body);
+                else if (block.standalone) recovered.push(body);
+            }
+            // A closed outer block is truly nested and remains excluded.
+            if (!stack.length) recovered.length = 0;
         }
     }
-    return blocks.join('\n\n');
+    return blocks.concat(recovered).join('\n\n');
 }
 
 export function stripLeadingStatus(text) {

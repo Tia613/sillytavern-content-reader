@@ -121,7 +121,7 @@ function init() {
     });
     panel = document.createElement('div'); panel.id = 'content-reader-settings';
     panel.innerHTML = `<div class="inline-drawer">
-      <div class="inline-drawer-toggle inline-drawer-header"><b>正文听书 · 0.2.0</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div>
+      <div class="inline-drawer-toggle inline-drawer-header"><b>正文听书 · 0.2.1</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div>
       <div class="inline-drawer-content">
         <p>只读完整的 &lt;content&gt; 正文。每次刷新后，先点击「试音」或播放一次。</p>
         <label><input type="checkbox" data-cr="auto"> 回复完成后自动朗读</label>
